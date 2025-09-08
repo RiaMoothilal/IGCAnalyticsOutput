@@ -1,0 +1,806 @@
+---
+title: "ParaMetrics.App"
+format:
+  dashboard:
+    orientation: columns
+    number-sections: false
+    nav-buttons: [twitter, facebook, instagram]
+    theme: cosmo
+output-file: index.html
+---
+
+```{r}
+#| include: false
+
+# Initialize
+setwd("~/GDrive/IGC_File_Analytics/Version2Claude")
+
+# load modules (previously built functions and reqd packages)
+suppressMessages(source("scripts/init_session.R"))
+
+load("output/processed_objects.RData")
+
+batch_main <- batch_data$batch_main
+batch_thermal <- batch_data$batch_thermal
+batch_glide <- batch_data$batch_glide
+batch_risk <- batch_data$batch_risk
+
+# Get DEM
+# Load DEM for 3D visualizations with comprehensive message suppression
+dem_mosaic <- NULL
+dem_available <- FALSE
+
+if (config$processing$dem_available && config$processing$dem_auto_download) {
+  # Calculate flight bounding box for DEM download
+  flight_bbox <- list(
+    xmin = min(flight_data$lon, na.rm = TRUE) - 0.01,
+    xmax = max(flight_data$lon, na.rm = TRUE) + 0.01,
+    ymin = min(flight_data$lat, na.rm = TRUE) - 0.01,
+    ymax = max(flight_data$lat, na.rm = TRUE) + 0.01
+  )
+  
+  # Suppress all possible message sources
+  tryCatch({
+    suppressMessages(suppressWarnings({
+      # Capture all output including C library messages
+      capture.output({
+        dem_mosaic <- load_dem_mosaic(flight_bbox)
+      }, type = c("output", "message"))
+    }))
+    
+    if (!is.null(dem_mosaic)) {
+      dem_available <- TRUE
+      cat("✓ DEM data loaded successfully for 3D visualizations\n")
+    } else {
+      cat("⚠ DEM loading failed - 3D terrain visualizations will be unavailable\n")
+    }
+    
+  }, error = function(e) {
+    cat("⚠ DEM loading error:", e$message, "- 3D terrain visualizations will be unavailable\n")
+    dem_mosaic <- NULL
+    dem_available <- FALSE
+  })
+} else {
+  cat("ℹ DEM auto-download disabled - 3D terrain visualizations will be unavailable\n")
+}
+# Get pilot info
+pilot_name <- flight_data$pilot[1]
+flight_date <- as.character(flight_data$date[1])
+glider_type <- unique(flight_data$glider)[1]
+
+# Calculate key metrics
+flight_duration_min <- round(difftime(max(flight_data$timestamp), 
+                                    min(flight_data$timestamp), units = "mins"))
+max_altitude <- max(flight_data$gps_alt, na.rm = TRUE)
+num_thermals <- ifelse(exists("thermal_summary") && !is.null(thermal_summary), 
+                       nrow(thermal_summary), 0)
+avg_thermal_strength <- ifelse(num_thermals > 0, 
+                              round(mean(thermal_summary$avg_climb_rate_mps, na.rm = TRUE), 2), 
+                              0)
+
+# Get batch comparison values if available
+batch_flight_durations <- NULL
+batch_max_altitudes <- NULL
+batch_thermal_counts <- NULL
+batch_thermal_strengths <- NULL
+
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  batch_flight_durations <- batch_main$TotalFlightTime
+  batch_max_altitudes <- batch_main$max_gps_alt_m
+  batch_thermal_counts <- batch_main$ValidThermals
+  batch_thermal_strengths <- batch_main$mean_th_climb_mps
+}
+
+```
+
+# Overview
+
+## Column 1 {width="30%"}
+
+### Row 1
+```{r value_box_flight_duration_min}
+#| content: valuebox
+#| title: "Flight Duration"
+#| padding: 2px
+list(
+  icon = "clock",
+  color = "#03a9f4",
+  value = paste(flight_duration_min, "min"),
+  caption = add_batch_context("flight duration", flight_duration_min, batch_flight_durations)
+)
+```
+### Row 2
+```{r value_box_max_altitude}
+#| content: valuebox
+#| title: "Maximum Altitude"
+#| padding: 2px
+list(
+  icon = "arrow-up",
+  color = "#4caf50",
+  value = paste(round(max_altitude), "m"),
+  caption = add_batch_context("max altitude", max_altitude, batch_max_altitudes)
+)
+```
+### Row 3
+```{r value_box_num_thermals}
+#| content: valuebox
+#| title: "Valid Thermals"
+#| padding: 5px
+list(
+  icon = "tornado",
+  color = "#9C27B0",
+  value = as.character(num_thermals),
+  caption = add_batch_context("thermal count", num_thermals, batch_thermal_counts)
+)
+```
+### Row 4
+```{r value_box_avg_thermal_strength}
+#| content: valuebox
+#| title: "Average Thermal Strength"
+#| padding: 10px
+
+list(
+  icon = "speedometer",
+  color = "#f44336",
+  value = ifelse(num_thermals > 0, paste(avg_thermal_strength, "m/s"), "N/A"),
+  caption = ifelse(num_thermals > 0, 
+                   add_batch_context("thermal strength", avg_thermal_strength, batch_thermal_strengths),
+                   "")
+)
+```
+
+
+## Column 2 
+
+### Row 
+::: {.card title="Flight Info"}
+Pilot: `r pilot_name`  
+Glider: `r glider_type`  
+Date: `r flight_date`  
+
+```{r card_flight_info}
+#| results: asis
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  cat("**Batch Size:** ", nrow(batch_main), " flights")
+} else {
+  cat("**Analysis Mode:** Individual flight only")
+}
+```
+:::
+
+### Row {height="70%"}
+```{r}
+#| title: "Altitude Timeline"
+fx_altitude_timeline_plot(flight_data)
+```
+
+## Column 3 
+
+
+```{r }
+#| title: "Flight Track"
+fx_plot_map(flight_data, map_style = "Esri.WorldImagery", plot_labels = FALSE)
+```
+
+# Performance
+
+## Column 1 {width=30%}
+
+```{r}
+#| title: "Performance Map"
+cat("Click on the segments for more info")
+fx_plot_simplified_vario_map(flight_data, map_style = "Esri.WorldImagery")
+
+```
+## Column 2 {.tabset}
+
+```{r batch_max_gps}
+#| title: Max Alt
+#| layout-ncol: 1
+
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  
+  
+
+  # Thermal strength comparison  
+  fx_batch_column_plot(batch_main %>%
+                         mutate(max_gps_alt_m = round(max_gps_alt_m)), 
+                       pilot, max_gps_alt_m,
+                             plot_title = "Max GPS Alt (m ASL)",
+                             highlight_pilots = pilot_name,
+                             highlight_col = "orange")
+  
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+
+```{r batch_flight_duration}
+#| title: Flight Duration
+#| layout-ncol: 1
+
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  
+  
+
+  # Flight duration comparison
+  fx_batch_column_plot(batch_main, pilot, TotalFlightTime,
+                             plot_title = "Flight Duration (minutes)",
+                             highlight_pilots = pilot_name,
+                             highlight_col = "orange")
+  
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+
+```{r batch_thermal_count}
+#| title: Thermal Count
+#| layout-ncol: 1
+
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  
+  
+  
+  # Thermal count comparison
+  fx_batch_column_plot(batch_main, pilot, ValidThermals,
+                             plot_title = "Number of Valid Thermals",
+                             highlight_pilots = pilot_name,
+                             highlight_col = "orange")
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+
+
+
+# Thermalling
+
+## Column 1 {.tabset}
+
+
+```{r thermal_tops_map}
+#| title: Thermal Tops Map
+
+cat("Click on the segments for more info")
+fx_create_thermal_tops_categorization_map(flight_data, thermal_summary, max_altitude = max(batch_data$batch_main$max_gps_alt_m))
+
+
+```
+
+
+```{r climbing_performance_map}
+#| title: Climbing Map
+cat("Click on the segments for more info")
+fx_plot_thermal_performance_map(flight_data, thermal_summary)
+
+```
+
+```{r centering_eff_Map}
+#| title: "Centering  Efficiency"
+# thermal_centering_map
+
+if (!is.null(thermal_summary) && nrow(thermal_summary) > 0) {
+  thermal_summary_by_time <- thermal_summary %>%
+    arrange(segment_id) %>%
+    mutate(thermal_number = row_number())
+  
+  thermal_centering_map <- fx_create_numbered_thermal_map(
+    flight_data, 
+    thermal_summary_by_time,
+    map_style = "Esri.WorldImagery"
+  )
+  # thermal_centering_map
+} else {
+  thermal_centering_map <- cat("No valid thermals detected for mapping.")
+} # end of big if statement
+
+cat("Click on the segments for more info")
+thermal_centering_map
+```
+
+```{r strongest_quarters_map}
+#| title: Thermal Parts Map
+
+tryCatch({
+  fx_plot_map_with_strongest_quarters(
+    flight_data, 
+    map_style = "Esri.WorldImagery"
+  )
+  
+}, error = function(e) {
+  cat("Strongest quarter analysis unavailable for this flight.")
+})
+```
+
+## Column 2 {.tabset}
+```{r gps_turning_end_alt_box}
+#| title: Thermal Tops
+#| layout-ncol: 1
+
+  # Detailed thermal analysis if available
+  if (exists("batch_thermal") && !is.null(batch_thermal) && nrow(batch_thermal) > 0) {
+    
+
+    fx_batch_box_plot(batch_thermal, pilot, gps_turning_end_alt,
+                           plot_title = "Thermal Exit Altitudes (m ASL)",
+                           highlight_pilots = pilot_name)
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+
+```{r turn_rate_box}
+#| title: Turn Rate
+#| layout-ncol: 1
+
+  # Detailed thermal analysis if available
+  if (exists("batch_thermal") && !is.null(batch_thermal) && nrow(batch_thermal) > 0) {
+    
+
+    fx_batch_box_plot(batch_thermal, pilot, avg_circle_duration,
+                           plot_title = "Circle Duration (sec)",
+                           highlight_pilots = pilot_name)
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+
+```{r turn_rate_variation_box}
+#| title: Turn Consistency
+#| layout-ncol: 1
+
+  # Detailed thermal analysis if available
+  if (exists("batch_thermal") && !is.null(batch_thermal) && nrow(batch_thermal) > 0) {
+    
+
+    fx_batch_box_plot(batch_thermal, pilot, circle_duration_std_dev,
+                           plot_title = "Circle Duration Variation (sec)",
+                           plot_sub_title = "(smaller = more consistent)",
+                           highlight_pilots = pilot_name)
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+```{r turn_delay_box}
+#| title: Turn delay
+#| layout-ncol: 1
+
+  # Detailed thermal analysis if available
+  if (exists("batch_thermal") && !is.null(batch_thermal) && nrow(batch_thermal) > 0) {
+    
+
+    fx_batch_box_plot(batch_thermal, pilot, climb_delay_sec,
+                           plot_title = "Turn delay (sec)",
+                           highlight_pilots = pilot_name)
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+```{r centering_box}
+#| title: Centering
+#| layout-ncol: 1
+if (exists("batch_main") && !is.null(batch_main) && nrow(batch_main) > 0) {
+  
+  # Detailed thermal analysis if available
+  if (exists("batch_thermal") && !is.null(batch_thermal) && nrow(batch_thermal) > 0) {
+    
+    fx_batch_box_plot(batch_thermal, pilot, centering_pct,
+                           plot_title = "Centering (%)",
+                           highlight_pilots = pilot_name)
+    
+   
+  }
+  
+} else {
+  cat("Batch comparison data not available. Load batch data to enable peer learning features.")
+}
+```
+```{r table_thermal}
+#| title: "Detailed Table"
+
+if (exists("thermal_summary") && !is.null(thermal_summary) && nrow(thermal_summary) > 0) {
+  display_thermals <- thermal_summary %>%
+    arrange(segment_id) %>%
+    mutate(thermal_number = row_number()) %>%    
+    select(thermal_number, gps_turning_start_alt, gps_turning_end_alt, 
+           thermal_gain_m, avg_climb_rate_mps, num_circles, 
+           centering_pct, avg_circle_duration, circle_duration_std_dev, climb_delay_sec) %>%
+    mutate(
+      gps_turning_start_alt = round(gps_turning_start_alt),
+      gps_turning_end_alt = round(gps_turning_end_alt),
+      thermal_gain_m = round(thermal_gain_m),
+      avg_climb_rate_mps = round(avg_climb_rate_mps, 1),
+      num_circles = round(num_circles, 1),
+      centering_pct = round(centering_pct),
+      circle_duration_sec = round(avg_circle_duration),
+      circle_consistency_sec = round(circle_duration_std_dev)
+    ) %>%
+    select(-c(avg_circle_duration,circle_duration_std_dev))
+  
+  colnames(display_thermals) <- clean_metric_names(colnames(display_thermals))
+  
+  # Create DT table with better dashboard integration
+  DT::datatable(
+    display_thermals,
+    options = list(
+      scrollX = TRUE,              # Enable horizontal scrolling
+      autoWidth = TRUE,            # Auto-adjust column widths
+      pageLength = 15,             # Reasonable page length
+      lengthMenu = c(10, 15, 25, 50),  # Page length options
+      dom = 'lBfrtip',            # Layout: length, buttons, filter, table, info, pagination
+      buttons = c('copy', 'csv'),  # Export buttons
+      fixedHeader = list(          # More specific fixed header config
+        header = TRUE,
+        headerOffset = 0
+      ),
+      columnDefs = list(
+        list(
+          className = 'dt-center', 
+          targets = '_all'  # Apply to all columns instead of specific indices
+        ),
+        list(
+          width = '60px',
+          targets = 0  # Just the first column (Thermal Number)
+        )
+      ),
+      initComplete = DT::JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#f8f9fa', 'color': '#495057'});",
+        "}"
+      )
+    ),
+    extensions = c('Buttons', 'FixedHeader'),  # Required extensions
+    class = 'stripe hover row-border order-column',  # Clean, minimal styling
+    rownames = FALSE,
+    filter = list(position = 'top', clear = FALSE),  # Column filters
+    style = 'bootstrap4'  # Use Bootstrap 4 styling to match dashboard
+  ) %>%
+    # Subtle highlighting for thermal number column
+    DT::formatStyle(
+      columns = 'Thermal Number',
+      backgroundColor = '#f8f9fa',
+      fontWeight = 'bold',
+      border = '1px solid #dee2e6'
+    ) %>%
+    # Very subtle highlighting for centering performance
+    DT::formatStyle(
+      columns = 'Centering Pct',
+      backgroundColor = DT::styleInterval(
+        cuts = c(40, 70),
+        values = c('#fff5f5', '#fffbf0', '#f0fff4')  # Very subtle tints
+      ),
+      fontWeight = DT::styleInterval(
+        cuts = c(40, 70),
+        values = c('normal', 'normal', 'bold')  # Bold for good performance only
+      )
+    ) 
+  
+} else {
+  cat("No valid thermals detected")
+}
+```
+
+# Safety AGL
+
+## Column AGL Risk Map
+
+```{r agl_risk_map}
+if (!is.null(risk_summary) && !is.null(flight_data) && "AGL" %in% names(flight_data)) {
+  tryCatch({
+    risk_data_with_phases <- fx_add_risk_agl_phase(flight_data)
+    risk_map <- fx_leaflet_risk_map(risk_data_with_phases)
+    risk_map
+  }, error = function(e) {
+    cat("Risk map visualization unavailable due to technical error.")
+  })
+} else {
+  cat("Risk map requires AGL (Above Ground Level) data which is not available for this flight.")
+}
+```
+## Column charts and summary {.tabset}
+
+
+```{r time_low}
+#| title: Overall
+fx_batch_column_plot(batch_main, pilot, time_below_100m_agl_min,
+                     plot_title = "Time Below 100m AGL (minutes)",
+                     highlight_pilots = pilot_name,
+                     normal_col = "#FF5722")
+```
+
+```{r low_and_active}
+#| title: Active Air
+batch_risk_high_and_active <- batch_data$batch_risk %>%
+  filter(risk_agl_phase == "High (<100m)" ) %>%
+    mutate(vario_range = max_vario - min_vario) %>%
+    filter(vario_range >= 4) %>%
+    group_by(pilot) %>%
+    summarise(num_occurences = n(),
+              tot_time_min = round(sum(duration_sec)/60),
+              .groups = "drop")
+
+
+fx_batch_column_plot(batch_risk_high_and_active, pilot, tot_time_min,
+                     plot_title = "Time Below 100m AGL in Active Air (minutes)",
+                    plot_sub_title = "Below 100m AGL and vario range 4m/s+",
+                    highlight_pilots = pilot_name,
+                     normal_col = "#FF5722")
+                  
+```
+# Landing
+
+## Column 1
+
+```{r landing_3d_viz}
+#| title: "3D Landing Pattern"
+
+if (dem_available && "AGL" %in% names(flight_data)) {
+  fx_create_3d_landing_plotly_simple(flight_data, dem_mosaic)
+} else if ("AGL" %in% names(flight_data)) {
+  fx_create_3d_landing_plotly_simple(flight_data, NULL)
+} else {
+  cat("3D visualization requires AGL data which is not available for this flight.")
+}
+```
+
+
+## Column 2 {.tabset}
+```{r landing_sat_view_2d}
+#| title: "2D Sat View"
+
+tryCatch({
+  fx_create_landing_satellite_map(flight_data)
+}, error = function(e) {
+  cat("2D satellite visualization unavailable")
+})
+```
+
+```{r landing_analysis_summary}
+#| title: "Landing Metrics"
+
+tryCatch({
+  final_glide_analysis <- fx_analyze_final_glide(flight_data, landing_duration_sec = 120)
+  
+  if (!is.null(final_glide_analysis$error)) {
+    cat("Landing analysis unavailable:", final_glide_analysis$error)
+  } else {
+    summary_text <- fx_create_final_glide_summary(final_glide_analysis)
+    cat(summary_text)
+  }
+}, error = function(e) {
+  cat("Landing analysis temporarily unavailable")
+})
+```
+
+```{r landing_profile_chart}
+#| title: "Approach Profile"
+#| fig.height: 12
+
+tryCatch({
+  final_glide_analysis <- fx_analyze_final_glide(flight_data, landing_duration_sec = 120)
+  
+  if (!is.null(final_glide_analysis$error)) {
+    cat("Landing profile analysis unavailable")
+  } else {
+    plot_obj <- fx_plot_final_glide_analysis(final_glide_analysis)
+    grid::grid.draw(plot_obj)
+  }
+}, error = function(e) {
+  cat("Landing profile analysis unavailable")
+})
+```
+
+# Weather
+
+## column 1 
+
+### Row {height=30%}
+
+```{r weather_check}
+#| results: asis
+has_weather_data <- !is.null(weather_summary) && 
+                   !is.null(weather_summary$wx_takeoff_site) &&
+   !is.na(weather_summary$wx_takeoff_site$SiteName)
+
+if (has_weather_data) {
+  cat(paste0(weather_summary$wx_takeoff_site$SiteName, ", which is ", 
+             weather_summary$wx_takeoff_site$distance_km, 
+             " km away from the flight origin has been identified identified as a potential source of weather forecast for the takeoff.",
+             "/n/n",
+             weather_summary$wx_landing_site$SiteName, ", which is ", 
+             weather_summary$wx_landing_site$distance_km, 
+             " km away from the flight end has been identified identified as a potential source of weather forecast for the landing. Use if appropriate."))
+} else {
+  cat("Weather data unavailable for this flight location. Consider adding weather data sources or manual weather observations.")
+}
+
+
+```
+
+
+### Row {.tabset}
+```{r takeoff_weather}
+#| title: "Takeoff Wx Table"
+if (has_weather_data) {
+  
+  takeoff_weather_table <- weather_summary$weather_data %>%
+    filter(SiteName ==  weather_summary$wx_takeoff_site$SiteName[1]) %>%
+    pivot_longer(
+      cols = -c(SiteName, FxVar),                 # pivot all the time/radius cols
+      names_to   = c("time_hm", "radius_km"),     # split column name into 2 fields
+      names_pattern = "^(\\d{4})\\(([-0-9.]+)km\\)$",
+      values_to  = "value",
+      values_drop_na = TRUE
+    ) %>%
+    mutate(model = paste0(time_hm,"(",radius_km,"km)")) %>%
+    select(-c(SiteName, time_hm, radius_km)) %>%
+    pivot_wider(names_from = model, values_from = value)
+  
+  
+   colnames(takeoff_weather_table) <- clean_metric_names(colnames(takeoff_weather_table))
+   
+    # Create DT table with better dashboard integration
+  DT::datatable(
+    takeoff_weather_table,
+    options = list(
+      scrollX = TRUE,              # Enable horizontal scrolling
+      autoWidth = TRUE,            # Auto-adjust column widths
+      pageLength = 10,             # Reasonable page length
+      lengthMenu = c(10, 15, 25, 50),  # Page length options
+      dom = 'lBfrtip',            # Layout: length, buttons, filter, table, info, pagination
+      # buttons = c('copy', 'csv'),  # Export buttons
+      fixedHeader = list(          # More specific fixed header config
+        header = TRUE,
+        headerOffset = 0
+      ),
+      columnDefs = list(
+        list(
+          className = 'dt-center', 
+          targets = '_all'  # Apply to all columns instead of specific indices
+        ),
+        list(
+          width = '60px',
+          targets = 0  # Just the first column (Thermal Number)
+        )
+      ),
+      initComplete = DT::JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#f8f9fa', 'color': '#495057'});",
+        "}"
+      )
+    ),
+    extensions = c('Buttons', 'FixedHeader'),  # Required extensions
+    class = 'stripe hover row-border order-column',  # Clean, minimal styling
+    rownames = FALSE,
+    # filter = list(position = 'top', clear = FALSE),  # Column filters
+    style = 'bootstrap4'  # Use Bootstrap 4 styling to match dashboard
+  ) %>%
+    # Subtle highlighting for thermal number column
+    DT::formatStyle(
+      columns = 'FxVar',
+      backgroundColor = '#f8f9fa',
+      fontWeight = 'bold',
+      border = '1px solid #dee2e6'
+    )} else {
+  cat("No takeoff weather data currently")
+}
+```
+
+```{r landing_weather}
+#| title: "Landing Wx Table"
+if (has_weather_data) {
+landing_weather_table <- weather_summary$weather_data %>%
+  filter(SiteName ==  weather_summary$wx_landing_site$SiteName[1]) %>%
+  pivot_longer(
+    cols = -c(SiteName, FxVar),                 # pivot all the time/radius cols
+    names_to   = c("time_hm", "radius_km"),     # split column name into 2 fields
+    names_pattern = "^(\\d{4})\\(([-0-9.]+)km\\)$",
+    values_to  = "value",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(model = paste0(time_hm,"(",radius_km,"km)")) %>%
+  select(-c(SiteName, time_hm, radius_km)) %>%
+  pivot_wider(names_from = model, values_from = value)
+
+
+ colnames(landing_weather_table) <- clean_metric_names(colnames(landing_weather_table))
+ # Create DT table with better dashboard integration
+DT::datatable(
+  landing_weather_table,
+  options = list(
+    scrollX = TRUE,              # Enable horizontal scrolling
+    autoWidth = TRUE,            # Auto-adjust column widths
+    pageLength = 10,             # Reasonable page length
+    lengthMenu = c(10, 15, 25, 50),  # Page length options
+    dom = 'lBfrtip',            # Layout: length, buttons, filter, table, info, pagination
+    # buttons = c('copy', 'csv'),  # Export buttons
+    fixedHeader = list(          # More specific fixed header config
+      header = TRUE,
+      headerOffset = 0
+    ),
+    columnDefs = list(
+      list(
+        className = 'dt-center', 
+        targets = '_all'  # Apply to all columns instead of specific indices
+      ),
+      list(
+        width = '60px',
+        targets = 0  # Just the first column (Thermal Number)
+      )
+    ),
+    initComplete = DT::JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'background-color': '#f8f9fa', 'color': '#495057'});",
+      "}"
+    )
+  ),
+  extensions = c('Buttons', 'FixedHeader'),  # Required extensions
+  class = 'stripe hover row-border order-column',  # Clean, minimal styling
+  rownames = FALSE,
+  # filter = list(position = 'top', clear = FALSE),  # Column filters
+  style = 'bootstrap4'  # Use Bootstrap 4 styling to match dashboard
+) %>%
+  # Subtle highlighting for thermal number column
+  DT::formatStyle(
+    columns = 'FxVar',
+    backgroundColor = '#f8f9fa',
+    fontWeight = 'bold',
+    border = '1px solid #dee2e6'
+  ) } else {
+  cat("No takeoff weather data currently")
+}
+```
+## Column 2 {.tabset}
+```{r Wind_by_alt}
+#| title: Alt Winds
+#| layout-ncol: 1
+
+# Wind analysis if available
+if (exists("thermal_summary") && !is.null(thermal_summary) && nrow(thermal_summary) > 0) {
+  
+  # Wind scatter plot
+  tryCatch({
+    wind_plot <- fx_wind_scatter_plot(flight_data, thermal_summary)
+    wind_plot
+  }, error = function(e) {
+    cat("Wind analysis not available")
+  })
+}
+
+```
+
+```{r wind_location}
+#| title: Wind Location
+fx_leaflet_wind_thermal_map(flight_data, thermal_summary) 
+```
+
+```{r wind_rose}
+#| title: Wind Rose
+fx_wind_rose(thermal_summary)
+```
+
+# Recommendations
+
+## Row
+Get hold of Ria from AirSchool Paragliding - he'll shoot you straight on the facts in this report ;-)
+
+Seriously though, this section is a work in progress
+
+More seriously, I'm not joking about speaking with Ria
+
+## Row
+```{r detailed_segment_level_map}
+#| title: Detailed Segment Map
+#| layout-ncol: 1
+
+fx_plot_map(flight_data)
+
+```
